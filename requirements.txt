@@ -1,0 +1,6 @@
+pandas
+numpy
+matplotlib
+sklearn
+genetic_selection
+-e .
