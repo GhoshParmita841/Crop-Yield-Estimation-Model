@@ -1,5 +1,6 @@
+
 """
-Implementation of base Sentinel Hub interfaces
+Image Download from Sentinel Hub interfaces
 """
 from abc import ABCMeta, abstractmethod
 from typing import Any, Dict, Optional
@@ -12,7 +13,17 @@ from ..geometry import BBox, Geometry
 from ..time_utils import RawTimeIntervalType, parse_time_interval, serialize_time
 from .utils import _update_other_args
 
-
+import gdal
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+import rasterio
+import glob
+from rasterio.plot import show
+from rasterio.mask import mask
+from shapely.geometry import mapping
+import geopandas as gpd
+import math
 class SentinelHubBaseApiRequest(DataRequest, metaclass=ABCMeta):
     """A base class for Sentinel Hub interfaces"""
 
@@ -236,3 +247,194 @@ def _get_processing_params(
         processing_params["downsampling"] = ResamplingType(downsampling).value
 
     return processing_params
+def read_band_image(band, path):
+    """
+    This function takes as input the Sentinel-2 band name and the path of the 
+    folder that the images are stored, reads the image and returns the data as
+    an array
+    input:   band           string            Sentinel-2 band name
+             path           string            path of the folder
+    output:  data           array (n x m)     array of the band image
+             spatialRef     string            projection 
+             geoTransform   tuple             affine transformation coefficients
+             targetprj                        spatial reference
+    """
+    a = path+'*B'+band+'*.jp2'
+    img = gdal.Open(glob.glob(a)[0])
+    data = np.array(img.GetRasterBand(1).ReadAsArray())
+    spatialRef = img.GetProjection()
+    geoTransform = img.GetGeoTransform()
+    targetprj = osr.SpatialReference(wkt = img.GetProjection())
+    return data, spatialRef, geoTransform, targetprj
+
+def ndvi(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the Normalised Difference Vegetation Index
+    input:  band1   array (n x m)      array of first NIR band image e.g B8
+            band2   array (n x m)      array of second Red band image e.g. B4
+    output: ndvi     array (n x m)      Normalised Difference Vegetation Index
+    """
+    ndvi = (band1 - band2) / (band1 + band2)
+    return ndvi
+def ndwi(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the Normalised Difference Water Index
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second SWIR band image e.g. B11
+    output: ndwi     array (n x m)      Normalised Difference Water Index
+    """
+    ndwi = (band1 - band2) / (band1 + band2)
+    return ndwi
+def gndvi(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the Green normalized difference vegetation index (GNDVI)
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second Green band image e.g. B3
+    output: gndvi     array (n x m)      Green normalized difference vegetation index (GNDVI)
+    """
+    gndvi = (band1 - band2) / (band1 + band2)
+    return gndvi
+def psnd(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the  Pigment specific normalized difference (PSND)
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second Blue band image e.g. B2
+    output: psnd     array (n x m)      Pigment specific normalized difference (PSND)
+    """
+    psnd = (band1 - band2) / (band1 + band2)
+    return psnd
+def mARI(band1, band2,band3):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the  Modified anthocyanin reflectance index (mARI)
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second Green band image e.g. B3
+            band3   array (n x m)      array of second Red-edge band image e.g. B5
+    output: mARI     array (n x m)      Modified anthocyanin reflectance index
+    """
+    mARI = (band1 / band2) - (band1 /band3)
+    return mARI
+def cigreen(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the  Chlorophyll indexgreen (CI green)
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second Green band image e.g B3
+    output: cigreen     array (n x m)      Chlorophyll indexgreen (CI green)
+    """
+    cigreen = (band1/ band2)-1
+    return cigreen
+def cirededge(band1, band2):
+    """
+    This function takes an input the arrays of the bands from the read_band_image
+    function and returns the  Chlorophyll index red-edge (CI red-edge)
+
+    input:  band1   array (n x m)      array of first NIR band image e.g. B8
+            band2   array (n x m)      array of second Rededge band image e.g B7
+    output: cirededge     array (n x m)      Chlorophyll index red-edge (CI red-edge)
+    """
+    cirededge = (band1/ band2)-1
+    return cirededge
+
+
+
+def reproject_shp_gdal(infile, outfile, targetprj):
+    """
+    This function takes as input the input and output file names and the projection
+    in which the input file will be reprojected and reprojects the input file using
+    gdal
+    input:  infile     string      input filename
+            outfile    string      output filename
+            targetprj              projection (output of function read_band_image)
+    """
+    ## reprojection with gdal 
+    
+    driver = ogr.GetDriverByName("ESRI Shapefile") 
+    dataSource = driver.Open(infile, 1) # 0 means read-only. 1 means writeable.
+    layer = dataSource.GetLayer()
+    sourceprj = layer.GetSpatialRef()
+    transform = osr.CoordinateTransformation(sourceprj, targetprj)
+    
+    # Create the output shapefile
+    outDriver = ogr.GetDriverByName("Esri Shapefile")
+    outDataSource = outDriver.CreateDataSource(outfile)
+    outlayer = outDataSource.CreateLayer('', targetprj, ogr.wkbPolygon)
+    outlayer.CreateField(ogr.FieldDefn('id', ogr.OFTInteger))
+    
+    #Iterate over Features
+    i = 0
+    for feature in layer:
+        transformed = feature.GetGeometryRef()
+        transformed.Transform(transform) #reproject geometry
+
+        geom = ogr.CreateGeometryFromWkb(transformed.ExportToWkb()) # create geometry from wkb (write geometry of reprojected geometry)
+        defn = outlayer.GetLayerDefn() #layer definition
+        feat = ogr.Feature(defn)  #create new feature
+        feat.SetField('id', i) #set id
+        feat.SetGeometry(geom) #set geometry
+        outlayer.CreateFeature(feat) 
+        i += 1
+        feat = None
+        
+def array2raster(array, geoTransform, projection, filename):
+    """ 
+    This function tarnsforms a numpy array to a geotiff projected raster
+    input:  array                       array (n x m)   input array
+            geoTransform                tuple           affine transformation coefficients
+            projection                  string          projection
+            filename                    string          output filename
+    output: dataset                                     gdal raster dataset
+            dataset.GetRasterBand(1)                    band object of dataset
+    
+    """
+    pixels_x = array.shape[1]
+    pixels_y = array.shape[0]
+    
+    driver = gdal.GetDriverByName('GTiff')
+    dataset = driver.Create(
+        filename,
+        pixels_x,
+        pixels_y,
+        1,
+        gdal.GDT_Float64, )
+    dataset.SetGeoTransform(geoTransform)
+    dataset.SetProjection(projection)
+    dataset.GetRasterBand(1).WriteArray(array)
+    dataset.FlushCache()  # Write to disk.
+    return dataset, dataset.GetRasterBand(1)  #If you need to return, remenber to return  also the dataset because the band don`t live without dataset.
+ 
+def clip_raster(filename, shp):
+    """
+    This function clips a raster based on a shapefile
+    input:  filename          string                input raster filename
+            shp               dataframe             input shapefile open with geopandas
+    output: clipped           array (1 x n x m)     clipped array 
+            clipped_meta      dict                  metadata
+            cr_ext            tuple                 extent of clipped data
+            gt                tuple                 affine transformation coefficients
+    """
+    inraster = rasterio.open(filename)
+    
+    extent_geojson = mapping(shp['geometry'][0])
+    clipped, crop_affine = mask(inraster, 
+                                shapes=[extent_geojson], 
+                                nodata = np.nan,
+                                crop=True)
+    clipped_meta = inraster.meta.copy()
+    # Update the metadata to have the new shape (x and y and affine information)
+    clipped_meta.update({"driver": "GTiff",
+                 "height": clipped.shape[0],
+                 "width": clipped.shape[1],
+                 "transform": crop_affine})
+    cr_ext = rasterio.transform.array_bounds(clipped_meta['height'], 
+                                            clipped_meta['width'], 
+                                            clipped_meta['transform'])
+    
+    # transform to gdal
+    gt = crop_affine.to_gdal()
+    
+    return clipped, clipped_meta, cr_ext, gt
